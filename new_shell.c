@@ -21,7 +21,7 @@ struct Comms {
     int stderr_fd;
 };
 
-struct Comms* comms_init(void)
+struct Comms *comms_init(void)
 {
     struct Comms *cms = malloc(sizeof(struct Comms));
     cms->pid = NO_VALUE;
@@ -30,6 +30,18 @@ struct Comms* comms_init(void)
     cms->stderr_fd = NO_VALUE;
 
     return cms;
+}
+
+struct Command {
+    char **arguments;
+    char *terminator;
+    int length;
+};
+
+struct Command *cmd_init(void)
+{
+    struct Command *cmd = malloc(sizeof(struct Command));
+    return cmd;
 }
 
 struct BGProc {
@@ -236,18 +248,61 @@ void fill_length_resets(struct RawInput *raw_input, struct ParsedInput *parsed_i
     raw_input->fill_length =0;
 }
 
+int isspecial(char *string)
+{
+    int specials_length = sizeof(special_characters) / sizeof(special_characters[0]);
+
+    for(int i = 0; i < specials_length; i++) {
+        if(strcmp(string, special_characters[i].pattern))
+            return 1;
+    }
+
+    return 0;
+}
+
+int prep_command(char *special_symbol, struct Command *cmd)
+{
+    if(cmd->length) {
+        cmd->terminator = special_symbol; 
+    } else {
+        fprintf(stderr, "cia idet prasminga komanda kai randam specialu simboli be pries tai enancios komandos");
+        return 1;
+    }
+    return 0;
+}
+
+void run_commands(struct ParsedInput *parsed_input, struct Command *cmd)
+{
+    char *current_word;
+
+    cmd->length = 0;
+
+    for(int i=0;; i++) {
+        current_word = parsed_input->word_ptrs[i];
+
+        if(isspecial(current_word)) {
+            prep_command(current_word, cmd);
+        } else {
+            cmd->arguments[cmd->length++] = current_word;
+        }
+    }
+}
+
 int main()
 {
     struct RawInput *raw_input = input_init();
     struct ParsedInput *parsed_input = parsed_input_init();
     struct Comms *cms = comms_init();
+    struct Command *cmd = cmd_init();
 
     while(1) {
         printf("$ ");
         get_raw_input(raw_input);
         parse_input(raw_input, parsed_input);
+        for(int i=0;i<parsed_input->fill_length; i++){
+            printf("'%s' ",parsed_input->word_ptrs[i])
+        }
         execute_and_return_exit_code(parsed_input->word_ptrs, cms);
-        //mypipe(parsed_input->word_ptrs, cms);
         fill_length_resets(raw_input, parsed_input);
     }
 }
