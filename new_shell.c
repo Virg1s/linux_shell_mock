@@ -51,7 +51,7 @@ struct BGProc {
 
 struct BGProc bg_processes[MAX_BG_PROC_COUNT];
 
-struct spec {
+struct Spec {
     char *pattern;
     void (*function)();
 };
@@ -59,7 +59,7 @@ struct spec {
 void t(void) {
 }
 
-struct spec special_characters[] = {
+struct Spec special_characters[] = {
     {"||", t},
     {"|", t},
     {"&&", t},
@@ -67,6 +67,8 @@ struct spec special_characters[] = {
     {"<", t},
     {">", t}
 };
+
+struct Spec command_terminator = (struct Spec){ NULL_POINTER, t };
     
 void safe_fd_close(int *file_descriptor)
 {
@@ -248,19 +250,22 @@ void fill_length_resets(struct RawInput *raw_input, struct ParsedInput *parsed_i
     raw_input->fill_length =0;
 }
 
-int isspecial(char *string)
+struct Spec* match_special(char *string)
 {
     int specials_length = sizeof(special_characters) / sizeof(special_characters[0]);
+    struct Spec *spec_pointer = NULL_POINTER;
 
     for(int i = 0; i < specials_length; i++) {
-        if(strcmp(string, special_characters[i].pattern))
-            return 1;
+        if(strcmp(string, special_characters[i].pattern)){
+            spec_pointer = &special_characters[i];
+            break;
+        }
     }
 
-    return 0;
+    return spec_pointer;
 }
 
-int prep_command(char *special_symbol, struct Command *cmd)
+int terminate_command(char *special_symbol, struct Command *cmd)/// cia viduriai yra bullshit, tiesiog reikia uzsettint null pointeri ant galiako
 {
     if(cmd->length) {
         cmd->terminator = special_symbol; 
@@ -271,17 +276,38 @@ int prep_command(char *special_symbol, struct Command *cmd)
     return 0;
 }
 
-void run_commands(struct ParsedInput *parsed_input, struct Command *cmd)
+int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct Comms *cms)
 {
     char *current_word;
+    struct Spec *current_special;
+    int run_condition, error_condition;
 
     cmd->length = 0;
 
     for(int i=0;; i++) {
         current_word = parsed_input->word_ptrs[i];
+        current_special = match_special(current_word);
 
-        if(isspecial(current_word)) {
-            prep_command(current_word, cmd);
+        run_condition = current_special && cmd->length;
+        error_condition = current_special && !cmd->length;
+
+        if (run_condition) {
+            terminate_command(cmd);
+            run_command(current_special, cmd);
+            cmd->length = 0;
+        } else if (error_condition) {
+            fprintf(stderr, "lia lia lia");
+            return 1;
+        } else {
+            cmd->arguments[cmd->length++] = current_word;
+        }
+
+        if(current_special) {
+
+            terminate_command(current_special, cmd);
+            run_command(cmd);
+
+            cmd->length = 0;
         } else {
             cmd->arguments[cmd->length++] = current_word;
         }
@@ -300,7 +326,7 @@ int main()
         get_raw_input(raw_input);
         parse_input(raw_input, parsed_input);
         for(int i=0;i<parsed_input->fill_length; i++){
-            printf("'%s' ",parsed_input->word_ptrs[i])
+            printf("'%s' ",parsed_input->word_ptrs[i]);
         }
         execute_and_return_exit_code(parsed_input->word_ptrs, cms);
         fill_length_resets(raw_input, parsed_input);
