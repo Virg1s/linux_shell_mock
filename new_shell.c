@@ -41,6 +41,7 @@ struct Command {
 struct Command *cmd_init(void)
 {
     struct Command *cmd = malloc(sizeof(struct Command));
+    cmd->arguments = malloc(sizeof(char*) * MAX_COMMAND_COUNT);
     return cmd;
 }
 
@@ -65,7 +66,7 @@ struct Spec special_characters[] = {
     {"&&", t},
     {"&", t},
     {"<", t},
-    {">", t}
+    {">", t},
 };
 
 struct Spec command_terminator = (struct Spec){ NULL_POINTER, t };
@@ -250,30 +251,45 @@ void fill_length_resets(struct RawInput *raw_input, struct ParsedInput *parsed_i
     raw_input->fill_length =0;
 }
 
-struct Spec* match_special(char *string)
+struct Spec* match_special(char *string) //retruns either pointer to Spec or null pointer
 {
+    if(!string) {
+
+        sp
+        goto finish;
+    }
+
     int specials_length = sizeof(special_characters) / sizeof(special_characters[0]);
     struct Spec *spec_pointer = NULL_POINTER;
 
     for(int i = 0; i < specials_length; i++) {
-        if(strcmp(string, special_characters[i].pattern)){
+        if(!strcmp(string, special_characters[i].pattern)){
             spec_pointer = &special_characters[i];
             break;
         }
     }
 
+    finish:
     return spec_pointer;
 }
 
-int terminate_command(char *special_symbol, struct Command *cmd)/// cia viduriai yra bullshit, tiesiog reikia uzsettint null pointeri ant galiako
+void terminate_command(struct Command *cmd)
 {
-    if(cmd->length) {
-        cmd->terminator = special_symbol; 
-    } else {
-        fprintf(stderr, "cia idet prasminga komanda kai randam specialu simboli be pries tai enancios komandos");
-        return 1;
-    }
-    return 0;
+    cmd->arguments[cmd->length++] = NULL_POINTER;
+}
+
+void run_command(struct Comms *cms, struct Spec *special_char, struct Command *cmd)
+{
+    special_char->function(cms, cmd);
+}
+
+void clear_previous_command_cache_data(struct Comms *cms, struct Command *cmd)
+{
+    cmd->length = 0;
+    cms->pid = NO_VALUE;
+    cms->stdin_fd = NO_VALUE;
+    cms->stdout_fd = NO_VALUE;
+    cms->stderr_fd = NO_VALUE;
 }
 
 int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct Comms *cms)
@@ -282,9 +298,9 @@ int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct C
     struct Spec *current_special;
     int run_condition, error_condition;
 
-    cmd->length = 0;
+    clear_previous_command_cache_data(cms, cmd);
 
-    for(int i=0;; i++) {
+    for(int i = 0; i < parsed_input->fill_length; i++) {
         current_word = parsed_input->word_ptrs[i];
         current_special = match_special(current_word);
 
@@ -293,21 +309,11 @@ int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct C
 
         if (run_condition) {
             terminate_command(cmd);
-            run_command(current_special, cmd);
+            run_command(cms, current_special, cmd);
             cmd->length = 0;
         } else if (error_condition) {
             fprintf(stderr, "lia lia lia");
             return 1;
-        } else {
-            cmd->arguments[cmd->length++] = current_word;
-        }
-
-        if(current_special) {
-
-            terminate_command(current_special, cmd);
-            run_command(cmd);
-
-            cmd->length = 0;
         } else {
             cmd->arguments[cmd->length++] = current_word;
         }
@@ -325,10 +331,9 @@ int main()
         printf("$ ");
         get_raw_input(raw_input);
         parse_input(raw_input, parsed_input);
-        for(int i=0;i<parsed_input->fill_length; i++){
-            printf("'%s' ",parsed_input->word_ptrs[i]);
-        }
-        execute_and_return_exit_code(parsed_input->word_ptrs, cms);
+        //for(int i=0;i<parsed_input->fill_length; i++){printf("'%s' ",parsed_input->word_ptrs[i]);}
+        //execute_and_return_exit_code(parsed_input->word_ptrs, cms);
+        run_commands(parsed_input, cmd, cms);
         fill_length_resets(raw_input, parsed_input);
     }
 }
