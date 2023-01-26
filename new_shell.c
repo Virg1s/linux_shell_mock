@@ -16,15 +16,29 @@
 
 struct Comms {
     int pid;
+    int exit_code;
+    int short_circuit;
     int stdin_fd;
     int stdout_fd;
     int stderr_fd;
 };
 
+void comms_reset(struct Comms *cms)
+{
+    cms->pid = NO_VALUE;
+    cms->exit_code = NO_VALUE;
+    cms->short_circuit = NO_VALUE;
+    cms->stdin_fd = NO_VALUE;
+    cms->stdout_fd = NO_VALUE;
+    cms->stderr_fd = NO_VALUE;
+}
+
 struct Comms *comms_init(void)
 {
     struct Comms *cms = malloc(sizeof(struct Comms));
     cms->pid = NO_VALUE;
+    cms->exit_code = NO_VALUE;
+    cms->short_circuit = NO_VALUE;
     cms->stdin_fd = NO_VALUE;
     cms->stdout_fd = NO_VALUE;
     cms->stderr_fd = NO_VALUE;
@@ -38,6 +52,12 @@ struct Command {
     int length;
 };
 
+void command_reset(struct Command *cmd)
+{
+    cmd->length = 0;
+    cmd->terminator = NULL_POINTER;
+}
+
 struct Command *cmd_init(void)
 {
     struct Command *cmd = malloc(sizeof(struct Command));
@@ -50,26 +70,37 @@ struct BGProc {
     int stdin_fd;
 };
 
-struct BGProc bg_processes[MAX_BG_PROC_COUNT];
+struct BGProcArray {
+    struct BGProc* processes[MAX_BG_PROC_COUNT];
+    int length;
+};
+
+struct BGProcArray background_processes;
 
 struct Spec {
     char *pattern;
-    void (*function)();
+    int (*function)(struct Comms*, struct Command*);
 };
-    
-void t(void) {
+
+int execute_synchronously(struct Comms*, struct Command*);
+int mypipe(struct Comms*, struct Command*);
+int mybg(struct Comms*, struct Command*);
+int logical_and(struct Comms*, struct Command*);
+int logical_or(struct Comms*, struct Command*);
+
+int t(struct Comms *cms, struct Command *cmd) //dummy function
+{
 }
 
 struct Spec special_characters[] = {
-    {"||", t},
-    {"|", t},
-    {"&&", t},
-    {"&", t},
-    {"<", t},
-    {">", t},
+    {"||", logical_or},
+    {"|", mypipe},
+    {"&&", logical_and},
+    {"&", mybg},
+    {";", execute_synchronously}
 };
 
-struct Spec command_terminator = (struct Spec){ NULL_POINTER, t };
+struct Spec normal_terminator = (struct Spec){NULL_POINTER, execute_synchronously};
     
 void safe_fd_close(int *file_descriptor)
 {
@@ -170,79 +201,102 @@ void parse_input(struct RawInput *raw_input, struct ParsedInput *parsed_input)
     }
 }
 
-int execute_command(char **args, int stdin_fd, int stdout_fd, int stderr_fd)
+int execute_command(struct Command *cmd, struct Comms *cms) //gal reiketu tuos skaicius pakeis kanalu vardais (manau stdin yra prialiasintas 0)
 {
-    int child_pid = fork();
+    int exit_code = 0, child_pid = fork();
 
     if(!child_pid) {
-        if (stdin_fd != NO_VALUE) {
-            dup2(stdin_fd, 0);
+        if (cms->stdin_fd != NO_VALUE) {
+            dup2(cms->stdin_fd, 0);
             }
-        if (stdout_fd != NO_VALUE) {
-            dup2(stdout_fd, 1);
+        if (cms->stdout_fd != NO_VALUE) {
+            dup2(cms->stdout_fd, 1);
             }
-        if (stderr_fd != NO_VALUE) {
-            dup2(stderr_fd, 2);
+        if (cms->stderr_fd != NO_VALUE) {
+            dup2(cms->stderr_fd, 2);
             }
 
-        int exec_return = execvp(args[0], args);
+        int exec_return = execvp(cmd->arguments[0], cmd->arguments);
+        fprintf(stderr, "command: '%s' not found\n", cmd->arguments[0]);
         exit(1);
     }
-    return child_pid;
+
+    cms->pid = child_pid;
+    return exit_code;
 }
 
-     
-struct Comms mybg(char **args, struct Comms input, struct BGProc bg_processes[])
+int mybg(struct Comms *cms, struct Command *cmd)
 {
-    int pipefd[2];
-    int child_pid = execute_command(args, input.stdin_fd, NO_VALUE, NO_VALUE);
-    struct BGProc proc_info = {child_pid, input.stdin_fd};
-
-    pipe(pipefd);
-
-    for(int i=0;; i++) {
-        if (i >= MAX_BG_PROC_COUNT){
-            fprintf(stderr, "MAXIMUM BACKGROUND PROCESSES REACHED");
-            exit(1);
-        } 
-
-        if(bg_processes[i].pid == 0){
-            bg_processes[i] = proc_info;
-            break;
-        }
+    if (background_processes.length == MAX_COMMAND_COUNT){
+        fprintf(stderr, "MAXIMUM BACKGROUND PROCESSES REACHED\n");
+        cms->short_circuit = 1;
+        return 1;
     }
 
-    struct Comms result = {NO_VALUE, NO_VALUE, NO_VALUE, NO_VALUE};
-    return result;
+    int pipefd[2];
+    pipe(pipefd);
+    cms->stdin_fd = pipefd[0];
+
+    execute_command(cmd, cms);
+    safe_fd_close(&pipefd[0]);
+
+    struct BGProc *proc_info = malloc(sizeof(struct BGProc));
+    proc_info->pid = cms->pid;
+    proc_info->stdin_fd = pipefd[1];
+
+    background_processes.processes[background_processes.length++] = proc_info;
+
+    return 0;
 }
 
-int execute_and_return_exit_code(char **args, struct Comms *input)
+int logical_and(struct Comms *cms, struct Command *cmd)
 {
-    int child_pid = execute_command(args, input->stdin_fd, NO_VALUE, NO_VALUE);
+    execute_synchronously(cms, cmd);
+    if (cms->exit_code)
+        cms->short_circuit = 1;
+
+    return 0;
+}
+
+int logical_or(struct Comms *cms, struct Command *cmd)
+{
+    execute_synchronously(cms, cmd);
+    if (!cms->exit_code)
+        cms->short_circuit = 1;
+
+    return 0;
+}
+
+int execute_synchronously(struct Comms *cms, struct Command *cmd)
+{
     int wstatus, child_process_exit_status = 1;
+    execute_command(cmd, cms);
     
-    waitpid(child_pid, &wstatus, 0); 
+    waitpid(cms->pid, &wstatus, 0); 
     
     if (WIFEXITED(wstatus)) {
         child_process_exit_status = WEXITSTATUS(wstatus);
     }
 
-    return child_process_exit_status;
+    cms->exit_code = child_process_exit_status;
+
+    return 0;
 }
 
-
-void mypipe(char **args, struct Comms *cms)
+int mypipe(struct Comms *cms, struct Command *cmd)
 {
     int pipefd[2];
     pipe(pipefd);
 
-    int child_pid = execute_command(args, cms->stdin_fd, pipefd[1], NO_VALUE);
+    cms->stdout_fd = pipefd[1];
+    execute_command(cmd, cms);
+
     safe_fd_close(&pipefd[1]);
-    struct Comms result = {child_pid, pipefd[0], NO_VALUE, NO_VALUE};
-    cms->pid = child_pid;
+
     cms->stdin_fd = pipefd[0];
     cms->stdout_fd = NO_VALUE;
-    cms->stderr_fd = NO_VALUE;
+
+    return 0;
 }
 
 void fill_length_resets(struct RawInput *raw_input, struct ParsedInput *parsed_input)
@@ -253,14 +307,13 @@ void fill_length_resets(struct RawInput *raw_input, struct ParsedInput *parsed_i
 
 struct Spec* match_special(char *string) //retruns either pointer to Spec or null pointer
 {
-    if(!string) {
-
-        sp
-        goto finish;
-    }
-
     int specials_length = sizeof(special_characters) / sizeof(special_characters[0]);
     struct Spec *spec_pointer = NULL_POINTER;
+
+    if(!string) {
+        spec_pointer = &normal_terminator;
+        goto finish;
+    }
 
     for(int i = 0; i < specials_length; i++) {
         if(!strcmp(string, special_characters[i].pattern)){
@@ -278,27 +331,14 @@ void terminate_command(struct Command *cmd)
     cmd->arguments[cmd->length++] = NULL_POINTER;
 }
 
-void run_command(struct Comms *cms, struct Spec *special_char, struct Command *cmd)
-{
-    special_char->function(cms, cmd);
-}
-
-void clear_previous_command_cache_data(struct Comms *cms, struct Command *cmd)
-{
-    cmd->length = 0;
-    cms->pid = NO_VALUE;
-    cms->stdin_fd = NO_VALUE;
-    cms->stdout_fd = NO_VALUE;
-    cms->stderr_fd = NO_VALUE;
-}
-
 int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct Comms *cms)
 {
     char *current_word;
     struct Spec *current_special;
     int run_condition, error_condition;
 
-    clear_previous_command_cache_data(cms, cmd);
+    comms_reset(cms);
+    command_reset(cmd);
 
     for(int i = 0; i < parsed_input->fill_length; i++) {
         current_word = parsed_input->word_ptrs[i];
@@ -309,10 +349,15 @@ int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct C
 
         if (run_condition) {
             terminate_command(cmd);
-            run_command(cms, current_special, cmd);
+
+            current_special->function(cms, cmd);
+
+            if (cms->short_circuit != NO_VALUE)
+                break;
+
             cmd->length = 0;
         } else if (error_condition) {
-            fprintf(stderr, "lia lia lia");
+            fprintf(stderr, "symbol '%s' not preceded by any command\n", current_special->pattern);
             return 1;
         } else {
             cmd->arguments[cmd->length++] = current_word;
@@ -332,7 +377,7 @@ int main()
         get_raw_input(raw_input);
         parse_input(raw_input, parsed_input);
         //for(int i=0;i<parsed_input->fill_length; i++){printf("'%s' ",parsed_input->word_ptrs[i]);}
-        //execute_and_return_exit_code(parsed_input->word_ptrs, cms);
+        //execute_synchronously(parsed_input->word_ptrs, cms);
         run_commands(parsed_input, cmd, cms);
         fill_length_resets(raw_input, parsed_input);
     }
