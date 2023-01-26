@@ -13,6 +13,8 @@
 #define NO_VALUE -1
 #define MAX_BG_PROC_COUNT 10
 #define NULL_POINTER 0x0
+#define TERMINATING 1
+#define NON_TERMINATING 0
 
 struct Comms {
     int pid;
@@ -79,6 +81,7 @@ struct BGProcArray background_processes;
 
 struct Spec {
     char *pattern;
+    int terminability;
     int (*function)(struct Comms*, struct Command*);
 };
 
@@ -93,14 +96,14 @@ int t(struct Comms *cms, struct Command *cmd) //dummy function
 }
 
 struct Spec special_characters[] = {
-    {"||", logical_or},
-    {"|", mypipe},
-    {"&&", logical_and},
-    {"&", mybg},
-    {";", execute_synchronously}
+    {"||", NON_TERMINATING, logical_or},
+    {"|", NON_TERMINATING, mypipe},
+    {"&&", NON_TERMINATING, logical_and},
+    {"&", TERMINATING, mybg},
+    {";", TERMINATING, execute_synchronously}
 };
 
-struct Spec normal_terminator = (struct Spec){NULL_POINTER, execute_synchronously};
+struct Spec normal_terminator = (struct Spec){NULL_POINTER, TERMINATING, execute_synchronously};
     
 void safe_fd_close(int *file_descriptor)
 {
@@ -326,16 +329,18 @@ struct Spec* match_special(char *string) //retruns either pointer to Spec or nul
     return spec_pointer;
 }
 
-void terminate_command(struct Command *cmd)
+void run_command(struct Comms *cms, struct Command *cmd, struct Spec *current_special)
 {
     cmd->arguments[cmd->length++] = NULL_POINTER;
+    current_special->function(cms, cmd);
+    cmd->length = 0;
 }
 
 int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct Comms *cms)
 {
     char *current_word;
-    struct Spec *current_special;
-    int run_condition, error_condition;
+    struct Spec *current_special, *next_is_special;
+    int run_condition, non_preceeding_error_condition, non_succeeding_error_condition;
 
     comms_reset(cms);
     command_reset(cmd);
@@ -343,22 +348,23 @@ int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct C
     for(int i = 0; i < parsed_input->fill_length; i++) {
         current_word = parsed_input->word_ptrs[i];
         current_special = match_special(current_word);
+        next_is_special = match_special(parsed_input->word_ptrs[i+1]);
 
         run_condition = current_special && cmd->length;
-        error_condition = current_special && !cmd->length;
+        non_preceeding_error_condition = current_special && !cmd->length && current_special != &normal_terminator;
+        non_succeeding_error_condition = current_special && !current_special->terminability && next_is_special;
 
-        if (run_condition) {
-            terminate_command(cmd);
-
-            current_special->function(cms, cmd);
+        if (non_preceeding_error_condition) {
+            fprintf(stderr, "symbol '%s' not preceded by any command\n", current_special->pattern);
+            return 1;
+        } else if (non_succeeding_error_condition) {
+            fprintf(stderr, "symbol '%s' not succeeded by any other command\n", current_special->pattern);
+            return 1;
+        } else if (run_condition) {
+            run_command(cms, cmd, current_special);
 
             if (cms->short_circuit != NO_VALUE)
                 break;
-
-            cmd->length = 0;
-        } else if (error_condition) {
-            fprintf(stderr, "symbol '%s' not preceded by any command\n", current_special->pattern);
-            return 1;
         } else {
             cmd->arguments[cmd->length++] = current_word;
         }
