@@ -91,10 +91,6 @@ int mybg(struct Comms*, struct Command*);
 int logical_and(struct Comms*, struct Command*);
 int logical_or(struct Comms*, struct Command*);
 
-int t(struct Comms *cms, struct Command *cmd) //dummy function
-{
-}
-
 struct Spec special_characters[] = {
     {"||", NON_TERMINATING, logical_or},
     {"|", NON_TERMINATING, mypipe},
@@ -230,6 +226,7 @@ int execute_command(struct Command *cmd, struct Comms *cms) //gal reiketu tuos s
 
 int mybg(struct Comms *cms, struct Command *cmd)
 {
+    //basically just replacing stdin with read end of a pipe and then putting write end of the pipe to and array along with pid of the process
     if (background_processes.length == MAX_COMMAND_COUNT){
         fprintf(stderr, "MAXIMUM BACKGROUND PROCESSES REACHED\n");
         cms->short_circuit = 1;
@@ -355,10 +352,10 @@ int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct C
         non_succeeding_error_condition = current_special && !current_special->terminability && next_is_special;
 
         if (non_preceeding_error_condition) {
-            fprintf(stderr, "symbol '%s' not preceded by any command\n", current_special->pattern);
+            fprintf(stderr, "error: symbol '%s' not preceded by any command\n", current_special->pattern);
             return 1;
         } else if (non_succeeding_error_condition) {
-            fprintf(stderr, "symbol '%s' not succeeded by any other command\n", current_special->pattern);
+            fprintf(stderr, "error: symbol '%s' not succeeded by any other command\n", current_special->pattern);
             return 1;
         } else if (run_condition) {
             run_command(cms, cmd, current_special);
