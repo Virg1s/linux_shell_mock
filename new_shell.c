@@ -379,8 +379,6 @@ int main()
         printf("$ ");
         get_raw_input(raw_input);
         parse_input(raw_input, parsed_input);
-        //for(int i=0;i<parsed_input->fill_length; i++){printf("'%s' ",parsed_input->word_ptrs[i]);}
-        //execute_synchronously(parsed_input->word_ptrs, cms);
         run_commands(parsed_input, cmd, cms);
         fill_length_resets(raw_input, parsed_input);
     }
