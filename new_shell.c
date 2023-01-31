@@ -151,25 +151,83 @@ struct ParsedInput* parsed_input_init(void)
     return parsed_input;
 }
 
+int create_or_rewrite_file(char *path, int *file_descriptor){
+    int file_index, return_value = REDIRECTION_SUCCESSFUL;
+
+    for (file_index = 0;; file_index++) {
+        if (file_index == MAX_OPEN_FILES) {
+            return_value = REDIRECTION_TOO_MANY_FILES_OPEN;
+            goto f_return;
+        } else if (open_files[file_index] == 0) {
+            break;
+        }
+    }
+
+    if (!access(path, F_OK)) {
+        remove(path);
+    }
+
+    *file_descriptor = open(path, O_CREAT | O_WRONLY, 0644);
+    open_files[file_index] = *file_descriptor;
+
+    f_return:
+    return return_value;
+}
+
 struct RedirectionOperator {
     char *pattern;
-    void (*function)(int, struct Comms*);
+    int (*function)(char *, struct Comms*);
 };
 
-void stdout_redirect(int fd, struct Comms *cms)
+int stdout_redirect(char *path, struct Comms *cms)
 {
+    int fd, return_value;
+
+    return_value = create_or_rewrite_file(path, &fd);
     cms->stdout_fd = fd;
+
+    return return_value;
 }
 
-void stderr_redirect(int fd, struct Comms *cms)
+int stderr_redirect(char *path, struct Comms *cms)
 {
+    int fd, return_value;
+
+    return_value = create_or_rewrite_file(path, &fd);
     cms->stderr_fd = fd;
+
+    return return_value;
 }
 
-void combined_redirect(int fd, struct Comms *cms)
+int combined_redirect(char *path, struct Comms *cms)
 {
+    int fd, return_value;
+
+    return_value = create_or_rewrite_file(path, &fd);
     cms->stdout_fd = fd;
     cms->stderr_fd = fd;
+
+    return return_value;
+}
+
+int clear_previous_redirects(struct Comms *cms)
+{
+    int com_channel_count = 3;
+    int * com_vals[] = {&cms->stdin_fd, &cms->stdout_fd, &cms->stderr_fd};
+
+    for (int i = 0; i < com_channel_count; i++) {
+        if (*com_vals[i] > 2) {
+            *com_vals[i] = NO_VALUE;
+        }
+    }
+
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (open_files[i] != 0) {
+            close(open_files[i]);
+            open_files[i] = 0;
+        }
+    }
+    return 0;
 }
 
 struct RedirectionOperator redirect_operators[REDIRECT_OP_AR_LEN] = {
@@ -180,32 +238,21 @@ struct RedirectionOperator redirect_operators[REDIRECT_OP_AR_LEN] = {
     {"&>", combined_redirect}
 };
 
-int trigger_redirect(char *filename, struct RedirectionOperator *redirect_op, struct Comms *cms)
+int trigger_redirect(char *path, struct RedirectionOperator *redirect_op, struct Comms *cms)
 {
-    int file_descriptor, file_index;
+    int file_descriptor, file_index, return_value;
 
-    if (filename == NULL_POINTER) {
+    if (path == NULL_POINTER) {
         return REDIRECTION_FILE_MISSING;
     }
 
-    for (file_index = 0;; file_index++) {
-        if (file_index == MAX_OPEN_FILES) {
-            return REDIRECTION_TOO_MANY_FILES_OPEN;
-        } else if (open_files[file_index] == 0) {
-            break;
-        }
-    }
-
-    file_descriptor = open(filename, O_CREAT | O_WRONLY, 0644);
-    open_files[file_index] = file_descriptor;
-
-    redirect_op->function(file_descriptor, cms);
-    return REDIRECTION_SUCCESSFUL;
+    return_value = redirect_op->function(path, cms);
+    return return_value;
 }
 
 int output_redirect(struct ParsedInput *parsed_input, int command_index, struct Comms *cms)
 {
-    char *filename, *pattern;
+    char *path, *pattern;
     int file_descriptor, pattern_length, diff, return_val;
     struct RedirectionOperator *redirect_op;
 
@@ -217,9 +264,9 @@ int output_redirect(struct ParsedInput *parsed_input, int command_index, struct 
         diff = strncmp(parsed_input->word_ptrs[command_index], pattern, pattern_length);
 
         if (!diff) {
-            filename = parsed_input->word_ptrs[command_index + 1];
+            path = parsed_input->word_ptrs[command_index + 1];
 
-            return_val = trigger_redirect(filename, redirect_op, cms);
+            return_val = trigger_redirect(path, redirect_op, cms);
 
             return return_val;
         }
@@ -267,23 +314,53 @@ void skip_subsequent_nonspace_printables(int *letter_index, struct RawInput *raw
     }
 }
 
-int isspecial(char *current_char, int *number_of_check_skips)
+union SpecCharWrapper{
+    struct Spec* controll_special;
+    struct RedirectionOperator* redirection_special;
+};
+
+int compare_special(char struct_type, union SpecCharWrapper wrap, char *string, int *number_of_check_skips)
 {
-    int controll_specials_length = sizeof(special_characters) / sizeof(special_characters[0]);
-    int pattern_length, diff;
     char *current_special;
+    int pattern_length, diff;
+    
+    current_special = struct_type == 'c' ? wrap.controll_special->pattern : wrap.redirection_special->pattern;
+    pattern_length = strlen(current_special);
 
-    for (int i = 0; i < controll_specials_length; i++) {
-        current_special = special_characters[i].pattern;
-        pattern_length = strlen(current_special);
-
-        diff = strncmp(current_char, current_special, pattern_length);
-        if (!diff) {
-            *number_of_check_skips = pattern_length;
-            return 1;
-        }
+    diff = strncmp(string, current_special, pattern_length);
+    if (!diff) {
+        *number_of_check_skips = pattern_length;
+        return 1;
     }
+
     return 0;
+}
+
+int isspecial(char *string, int *number_of_check_skips)
+{
+    int controll_specials_length, redirect_specials_length, return_val;
+    union SpecCharWrapper wrapper;
+
+    *number_of_check_skips = 0;
+
+    redirect_specials_length = sizeof(redirect_operators) / sizeof(redirect_operators[0]);
+    for(int i = 0; i < redirect_specials_length; i++){
+        wrapper.redirection_special = redirect_operators + i;
+        return_val = compare_special('r', wrapper, string, number_of_check_skips);
+        if (return_val)
+            goto f_return;
+    }
+
+    controll_specials_length = sizeof(special_characters) / sizeof(special_characters[0]);
+    for (int i = 0; i < controll_specials_length; i++) {
+        wrapper.controll_special = special_characters + i;
+        return_val = compare_special('c', wrapper, string, number_of_check_skips);
+        if (return_val)
+            goto f_return;
+    }
+    
+    f_return:
+    return return_val;
 }
 
 void pad_input(struct RawInput *raw_input)
@@ -293,7 +370,7 @@ void pad_input(struct RawInput *raw_input)
     int source_index = 0, destination_index = 0, source_fill_length = raw_input->fill_length;
     char *source = raw_input->buffer, *destination = malloc(sizeof(char) * PADDED_INPUT_MAX_LENGTH);
 
-    for (; source_index < source_fill_length; source_index++) {
+    for (; source_index <= source_fill_length; source_index++) {
         current_char = source[source_index];
 
         if (isspecial(source + source_index, &special_length)) {
@@ -315,6 +392,7 @@ void pad_input(struct RawInput *raw_input)
 
 
         if (current_char == '\0') {
+            destination[destination_index++];
             break;
         } else if (isspace(current_char)) {
             while (isspace(source[source_index+1])) {
@@ -456,7 +534,7 @@ int mypipe(struct Comms *cms, struct Command *cmd)
 void buffer_fill_length_resets(struct RawInput *raw_input, struct ParsedInput *parsed_input)
 {
     parsed_input->fill_length = 0;
-    raw_input->fill_length =0;
+    raw_input->fill_length = 0;
 }
 
 struct Spec* match_special(char *string) //retruns either pointer to Spec or null pointer
@@ -495,7 +573,7 @@ int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct C
 
     comms_reset(cms);
     command_reset(cmd);
-    //close_open_redirects();
+    //close_open_redirect_files();
 
     for(int i = 0; i < parsed_input->fill_length; i++) {
         current_word = parsed_input->word_ptrs[i];
@@ -518,13 +596,14 @@ int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct C
             i++;
             continue;
         } else if (redirect_status == REDIRECTION_FILE_MISSING){
-            fprintf(stderr, "no filename provided for redirection operator\n");
+            fprintf(stderr, "no path provided for redirection operator\n");
             return 1;
         } else if (redirect_status == REDIRECTION_TOO_MANY_FILES_OPEN) {
             fprintf(stderr, "too many files open currently");
             return 1;
         } else if (run_condition) {
             run_command(cms, cmd, current_special);
+            clear_previous_redirects(cms);
 
             if (cms->short_circuit != NO_VALUE)
                 break;
@@ -545,7 +624,7 @@ int main()
         printf("$ ");
         get_raw_input(raw_input);
         parse_input(raw_input, parsed_input);
-        printf("RECEIVED INPUT: "); for (int i = 0; i < parsed_input->fill_length; i++) { printf("%s ", parsed_input->word_ptrs[i]);}; printf("\n");
+        //printf("RECEIVED INPUT: "); for (int i = 0; i < parsed_input->fill_length; i++) { printf("%s ", parsed_input->word_ptrs[i]);}; printf("\n");
         run_commands(parsed_input, cmd, cms);
         buffer_fill_length_resets(raw_input, parsed_input);
     }
