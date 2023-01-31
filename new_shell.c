@@ -5,16 +5,27 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include<sys/stat.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #define INPUT_MAX_LENGTH 500
+#define PADDED_INPUT_MAX_LENGTH 1000
 #define MAX_COMMAND_COUNT 50
 #define NO_VALUE -1
 #define MAX_BG_PROC_COUNT 10
 #define NULL_POINTER 0x0
 #define TERMINATING 1
 #define NON_TERMINATING 0
+#define NO_REDIRECTION 1
+#define REDIRECTION_SUCCESSFUL 0
+#define REDIRECTION_FILE_MISSING -1
+#define REDIRECTION_TOO_MANY_FILES_OPEN -2
+#define REDIRECT_OP_AR_LEN 4
+#define MAX_OPEN_FILES 10
+
+int open_files[MAX_OPEN_FILES]; // should be probably linked list of structs or smth. Also should be associated with background processes and contain owning process pid
 
 struct Comms {
     int pid;
@@ -100,7 +111,7 @@ struct Spec special_characters[] = {
 };
 
 struct Spec normal_terminator = (struct Spec){NULL_POINTER, TERMINATING, execute_synchronously};
-    
+
 void safe_fd_close(int *file_descriptor)
 {
     close(*file_descriptor);
@@ -140,13 +151,89 @@ struct ParsedInput* parsed_input_init(void)
     return parsed_input;
 }
 
+struct RedirectionOperator {
+    char *pattern;
+    void (*function)(int, struct Comms*);
+};
+
+void stdout_redirect(int fd, struct Comms *cms)
+{
+    cms->stdout_fd = fd;
+}
+
+void stderr_redirect(int fd, struct Comms *cms)
+{
+    cms->stderr_fd = fd;
+}
+
+void combined_redirect(int fd, struct Comms *cms)
+{
+    cms->stdout_fd = fd;
+    cms->stderr_fd = fd;
+}
+
+struct RedirectionOperator redirect_operators[REDIRECT_OP_AR_LEN] = {
+    //{"<", t},
+    {">", stdout_redirect},
+    {"1>", stdout_redirect},
+    {"2>", stderr_redirect},
+    {"&>", combined_redirect}
+};
+
+int trigger_redirect(char *filename, struct RedirectionOperator *redirect_op, struct Comms *cms)
+{
+    int file_descriptor, file_index;
+
+    if (filename == NULL_POINTER) {
+        return REDIRECTION_FILE_MISSING;
+    }
+
+    for (file_index = 0;; file_index++) {
+        if (file_index == MAX_OPEN_FILES) {
+            return REDIRECTION_TOO_MANY_FILES_OPEN;
+        } else if (open_files[file_index] == 0) {
+            break;
+        }
+    }
+
+    file_descriptor = open(filename, O_CREAT | O_WRONLY, 0644);
+    open_files[file_index] = file_descriptor;
+
+    redirect_op->function(file_descriptor, cms);
+    return REDIRECTION_SUCCESSFUL;
+}
+
+int output_redirect(struct ParsedInput *parsed_input, int command_index, struct Comms *cms)
+{
+    char *filename, *pattern;
+    int file_descriptor, pattern_length, diff, return_val;
+    struct RedirectionOperator *redirect_op;
+
+    for (int i = 0; i < REDIRECT_OP_AR_LEN; i++) {
+        redirect_op = &redirect_operators[i];
+        pattern = redirect_op->pattern;
+        pattern_length = strlen(pattern);
+
+        diff = strncmp(parsed_input->word_ptrs[command_index], pattern, pattern_length);
+
+        if (!diff) {
+            filename = parsed_input->word_ptrs[command_index + 1];
+
+            return_val = trigger_redirect(filename, redirect_op, cms);
+
+            return return_val;
+        }
+    }
+
+    return NO_REDIRECTION;
+}
+
 void get_raw_input(struct RawInput *raw_input)
 {
     int i;
     char current_char;
-    int buffer_length = raw_input->buffer_length;
 
-    for(i = 0; i < buffer_length; i++) {
+    for(i = 0; i < INPUT_MAX_LENGTH; i++) {
         current_char = getchar();
         raw_input->buffer[i] = current_char;
 
@@ -163,7 +250,7 @@ void save_word_pointer(char *word_pointer, struct ParsedInput *parsed_input)
 {
     int word_index = parsed_input->fill_length;
     parsed_input->word_ptrs[word_index] = word_pointer;
-    ++*&parsed_input->fill_length; //cheesy
+    ++parsed_input->fill_length;
 }
 
 void skip_subsequent_nonspace_printables(int *letter_index, struct RawInput *raw_input)
@@ -180,10 +267,74 @@ void skip_subsequent_nonspace_printables(int *letter_index, struct RawInput *raw
     }
 }
 
+int isspecial(char *current_char, int *number_of_check_skips)
+{
+    int controll_specials_length = sizeof(special_characters) / sizeof(special_characters[0]);
+    int pattern_length, diff;
+    char *current_special;
+
+    for (int i = 0; i < controll_specials_length; i++) {
+        current_special = special_characters[i].pattern;
+        pattern_length = strlen(current_special);
+
+        diff = strncmp(current_char, current_special, pattern_length);
+        if (!diff) {
+            *number_of_check_skips = pattern_length;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void pad_input(struct RawInput *raw_input)
+{
+    char current_char;
+    int special_length;
+    int source_index = 0, destination_index = 0, source_fill_length = raw_input->fill_length;
+    char *source = raw_input->buffer, *destination = malloc(sizeof(char) * PADDED_INPUT_MAX_LENGTH);
+
+    for (; source_index < source_fill_length; source_index++) {
+        current_char = source[source_index];
+
+        if (isspecial(source + source_index, &special_length)) {
+            if (!isspace(destination[destination_index - 1])) {
+                destination[destination_index++] = ' ';
+            }
+
+            while (special_length--) {
+            destination[destination_index++] = source[source_index++];
+            }
+            source_index--;
+
+            if (!isspace(destination[destination_index])) {
+                destination[destination_index++] = ' ';
+            }
+        } else {
+            destination[destination_index++] = current_char;
+        }
+
+
+        if (current_char == '\0') {
+            break;
+        } else if (isspace(current_char)) {
+            while (isspace(source[source_index+1])) {
+                source_index++;
+            }
+        }
+    }
+
+    free(raw_input->buffer);
+    raw_input->buffer = destination;
+    raw_input->fill_length = destination_index;
+}
+
 void parse_input(struct RawInput *raw_input, struct ParsedInput *parsed_input)
 {
-    int input_fill_length = raw_input->fill_length;
+    int input_fill_length;
     char *current_char;
+
+    pad_input(raw_input);
+    input_fill_length = raw_input->fill_length;
 
     for (int letter_index = 0; letter_index < input_fill_length + 1; letter_index++) {
         current_char = raw_input->buffer + letter_index;
@@ -288,7 +439,10 @@ int mypipe(struct Comms *cms, struct Command *cmd)
     int pipefd[2];
     pipe(pipefd);
 
-    cms->stdout_fd = pipefd[1];
+    if (cms->stdout_fd == NO_VALUE) {
+        cms->stdout_fd = pipefd[1];
+    }
+
     execute_command(cmd, cms);
 
     safe_fd_close(&pipefd[1]);
@@ -299,7 +453,7 @@ int mypipe(struct Comms *cms, struct Command *cmd)
     return 0;
 }
 
-void fill_length_resets(struct RawInput *raw_input, struct ParsedInput *parsed_input)
+void buffer_fill_length_resets(struct RawInput *raw_input, struct ParsedInput *parsed_input)
 {
     parsed_input->fill_length = 0;
     raw_input->fill_length =0;
@@ -337,15 +491,18 @@ int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct C
 {
     char *current_word;
     struct Spec *current_special, *next_is_special;
-    int run_condition, non_preceeding_error_condition, non_succeeding_error_condition;
+    int run_condition, non_preceeding_error_condition, non_succeeding_error_condition, redirect_status;
 
     comms_reset(cms);
     command_reset(cmd);
+    //close_open_redirects();
 
     for(int i = 0; i < parsed_input->fill_length; i++) {
         current_word = parsed_input->word_ptrs[i];
         current_special = match_special(current_word);
         next_is_special = match_special(parsed_input->word_ptrs[i+1]);
+
+        redirect_status = current_special ? NO_REDIRECTION : output_redirect(parsed_input, i, cms);
 
         run_condition = current_special && cmd->length;
         non_preceeding_error_condition = current_special && !cmd->length && current_special != &normal_terminator;
@@ -356,6 +513,15 @@ int run_commands(struct ParsedInput *parsed_input, struct Command *cmd, struct C
             return 1;
         } else if (non_succeeding_error_condition) {
             fprintf(stderr, "error: symbol '%s' not succeeded by any other command\n", current_special->pattern);
+            return 1;
+        } else if (redirect_status == REDIRECTION_SUCCESSFUL) {
+            i++;
+            continue;
+        } else if (redirect_status == REDIRECTION_FILE_MISSING){
+            fprintf(stderr, "no filename provided for redirection operator\n");
+            return 1;
+        } else if (redirect_status == REDIRECTION_TOO_MANY_FILES_OPEN) {
+            fprintf(stderr, "too many files open currently");
             return 1;
         } else if (run_condition) {
             run_command(cms, cmd, current_special);
@@ -379,7 +545,8 @@ int main()
         printf("$ ");
         get_raw_input(raw_input);
         parse_input(raw_input, parsed_input);
+        printf("RECEIVED INPUT: "); for (int i = 0; i < parsed_input->fill_length; i++) { printf("%s ", parsed_input->word_ptrs[i]);}; printf("\n");
         run_commands(parsed_input, cmd, cms);
-        fill_length_resets(raw_input, parsed_input);
+        buffer_fill_length_resets(raw_input, parsed_input);
     }
 }
