@@ -110,7 +110,7 @@ struct Spec special_characters[] = {
     {";", TERMINATING, execute_synchronously}
 };
 
-struct Spec normal_terminator = (struct Spec){NULL_POINTER, TERMINATING, execute_synchronously};
+struct Spec normal_terminator = (struct Spec) {NULL_POINTER, TERMINATING, execute_synchronously};
 
 void safe_fd_close(int *file_descriptor)
 {
@@ -150,7 +150,7 @@ ParsedInput* parsed_input_init(void)
     return parsed_input;
 }
 
-int create_or_rewrite_file(char *path, int *file_descriptor){
+int create_or_rewrite_file(char *path, int *file_descriptor) {
     int file_index, return_value = REDIRECTION_SUCCESSFUL;
 
     for (file_index = 0;; file_index++) {
@@ -240,7 +240,7 @@ struct RedirectionOperator redirect_operators[REDIRECT_OP_AR_LEN] = {
 
 int trigger_redirect(char *path, struct RedirectionOperator *redirect_op, Comms *cms)
 {
-    int file_descriptor, file_index, return_value;
+    int return_value;
 
     if (path == NULL_POINTER) {
         return REDIRECTION_FILE_MISSING;
@@ -253,7 +253,7 @@ int trigger_redirect(char *path, struct RedirectionOperator *redirect_op, Comms 
 int output_redirect(ParsedInput *parsed_input, int command_index, Comms *cms)
 {
     char *path, *pattern;
-    int file_descriptor, pattern_length, diff, return_val;
+    int pattern_length, diff, return_val;
     struct RedirectionOperator *redirect_op;
 
     for (int i = 0; i < REDIRECT_OP_AR_LEN; i++) {
@@ -280,7 +280,7 @@ void get_raw_input(RawInput *raw_input)
     int i;
     char current_char;
 
-    for(i = 0; i < INPUT_MAX_LENGTH; i++) {
+    for (i = 0; i < INPUT_MAX_LENGTH; i++) {
         current_char = getchar();
         raw_input->buffer[i] = current_char;
 
@@ -344,7 +344,7 @@ int isspecial(char *string, int *number_of_check_skips)
     *number_of_check_skips = 0;
 
     redirect_specials_length = sizeof(redirect_operators) / sizeof(redirect_operators[0]);
-    for(int i = 0; i < redirect_specials_length; i++){
+    for (int i = 0; i < redirect_specials_length; i++) {
         wrapper.redirection_special = redirect_operators + i;
         return_val = compare_special('r', wrapper, string, number_of_check_skips);
         if (return_val)
@@ -392,7 +392,7 @@ void pad_input(RawInput *raw_input)
 
 
         if (current_char == '\0') {
-            destination[destination_index++];
+            destination[destination_index++] = '\0';
             break;
         } else if (isspace(current_char)) {
             while (isspace(source[source_index+1])) {
@@ -417,7 +417,7 @@ void parse_input(RawInput *raw_input, ParsedInput *parsed_input)
     for (int letter_index = 0; letter_index < input_fill_length + 1; letter_index++) {
         current_char = raw_input->buffer + letter_index;
 
-        if (isspace(*current_char)){
+        if (isspace(*current_char)) {
             *current_char = '\0';
         } else if (isprint(*current_char)) {
             save_word_pointer(current_char, parsed_input);
@@ -433,7 +433,7 @@ int execute_command(Command *cmd, Comms *cms) //gal reiketu tuos skaicius pakeis
 {
     int exit_code = 0, child_pid = fork();
 
-    if(!child_pid) {
+    if (!child_pid) {
         if (cms->stdin_fd != NO_VALUE) {
             dup2(cms->stdin_fd, 0);
             }
@@ -444,7 +444,7 @@ int execute_command(Command *cmd, Comms *cms) //gal reiketu tuos skaicius pakeis
             dup2(cms->stderr_fd, 2);
             }
 
-        int exec_return = execvp(cmd->arguments[0], cmd->arguments);
+        execvp(cmd->arguments[0], cmd->arguments);
         fprintf(stderr, "command: '%s' not found\n", cmd->arguments[0]);
         exit(1);
     }
@@ -456,7 +456,7 @@ int execute_command(Command *cmd, Comms *cms) //gal reiketu tuos skaicius pakeis
 int mybg(Comms *cms, Command *cmd)
 {
     //basically just replacing stdin with read end of a pipe and then putting write end of the pipe to and array along with pid of the process
-    if (background_processes.length == MAX_COMMAND_COUNT){
+    if (background_processes.length == MAX_COMMAND_COUNT) {
         fprintf(stderr, "MAXIMUM BACKGROUND PROCESSES REACHED\n");
         cms->short_circuit = 1;
         return 1;
@@ -542,13 +542,13 @@ struct Spec* match_special(char *string) //retruns either pointer to Spec or nul
     int specials_length = sizeof(special_characters) / sizeof(special_characters[0]);
     struct Spec *spec_pointer = NULL_POINTER;
 
-    if(!string) {
+    if (!string) {
         spec_pointer = &normal_terminator;
         goto finish;
     }
 
-    for(int i = 0; i < specials_length; i++) {
-        if(!strcmp(string, special_characters[i].pattern)){
+    for (int i = 0; i < specials_length; i++) {
+        if (!strcmp(string, special_characters[i].pattern)) {
             spec_pointer = &special_characters[i];
             break;
         }
@@ -573,9 +573,8 @@ int run_commands(ParsedInput *parsed_input, Command *cmd, Comms *cms)
 
     comms_reset(cms);
     command_reset(cmd);
-    //close_open_redirect_files();
 
-    for(int i = 0; i < parsed_input->fill_length; i++) {
+    for (int i = 0; i < parsed_input->fill_length; i++) {
         current_word = parsed_input->word_ptrs[i];
         current_special = match_special(current_word);
         next_is_special = match_special(parsed_input->word_ptrs[i+1]);
@@ -595,7 +594,7 @@ int run_commands(ParsedInput *parsed_input, Command *cmd, Comms *cms)
         } else if (redirect_status == REDIRECTION_SUCCESSFUL) {
             i++;
             continue;
-        } else if (redirect_status == REDIRECTION_FILE_MISSING){
+        } else if (redirect_status == REDIRECTION_FILE_MISSING) {
             fprintf(stderr, "no path provided for redirection operator\n");
             return 1;
         } else if (redirect_status == REDIRECTION_TOO_MANY_FILES_OPEN) {
@@ -603,7 +602,7 @@ int run_commands(ParsedInput *parsed_input, Command *cmd, Comms *cms)
             return 1;
         } else if (run_condition) {
             run_command(cms, cmd, current_special);
-            clear_previous_redirects(cms);
+            clear_previous_redirects(cms); //closes all open redirects even for background processes - should be improved :/
 
             if (cms->short_circuit != NO_VALUE)
                 break;
@@ -611,6 +610,7 @@ int run_commands(ParsedInput *parsed_input, Command *cmd, Comms *cms)
             cmd->arguments[cmd->length++] = current_word;
         }
     }
+    return 0;
 }
 
 int main()
@@ -628,3 +628,11 @@ int main()
         buffer_fill_length_resets(raw_input, parsed_input);
     }
 }
+
+/*
+TODO:
+- find a linter
+- find a unit testing suite
+- change clear_previous_redirects() function and use different data structures to contain open files and background processes
+- implement >> and <
+*/
